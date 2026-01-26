@@ -8,7 +8,6 @@ bool BleLink::begin() {
 
   envService.addCharacteristic(eco2Char);
   envService.addCharacteristic(timeChar);
-
   envService.addCharacteristic(seqChar);
   envService.addCharacteristic(ackChar);
   envService.addCharacteristic(payloadChar);
@@ -29,27 +28,25 @@ void BleLink::poll() {
   BLE.poll();
 
   BLEDevice central = BLE.central();
-  bool connected = central && central.connected();
-
-  if (connected && !wasConnected) {
+  if (central && central.connected()) {
     lastCentralAddr = central.address();
-    wasConnected = true;
-  } else if (!connected && wasConnected) {
-    wasConnected = false;
   }
 }
 
-bool BleLink::isConnected() {
+void BleLink::onAckUpdate() {
+  if (ackChar.written()) {
+    uint32_t v = 0;
+    ackChar.readValue(v);
+    lastAckSeq = v;
+  }
+}
+
+bool BleLink::isConnected() const {
   BLEDevice central = BLE.central();
   return (central && central.connected());
 }
 
 bool BleLink::justConnected() {
-  // call after poll(): if currently connected and wasConnected just set true in poll,
-  // we detect by checking if we have an address and a fresh transition
-  // simplest: store transition in poll -> but here we infer:
-  // We'll treat "justConnected" as: connected && wasConnected && centralAddress not empty and lastCentralAddr set this poll.
-  // To keep it reliable, use a static latch:
   static bool last = false;
   bool now = isConnected();
   bool jc = (now && !last);
@@ -65,7 +62,7 @@ bool BleLink::justDisconnected() {
   return jd;
 }
 
-const char* BleLink::centralAddress() {
+const char* BleLink::centralAddress() const {
   return lastCentralAddr.c_str();
 }
 
@@ -75,14 +72,6 @@ void BleLink::setEco2(uint16_t eco2) {
 
 void BleLink::setTime(const char* timeStr) {
   timeChar.writeValue(timeStr);
-}
-
-void BleLink::onAckUpdate() {
-  if (ackChar.written()) {
-    uint32_t v = 0;
-    ackChar.readValue(v);
-    lastAckSeq = v;
-  }
 }
 
 bool BleLink::waitAck(uint32_t seq, unsigned long timeoutMs) {

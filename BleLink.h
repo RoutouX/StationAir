@@ -7,18 +7,16 @@ class BleLink {
 public:
   bool begin();
   void poll();
+  void onAckUpdate();
 
-  bool isConnected();
+  bool isConnected() const;
   bool justConnected();
   bool justDisconnected();
-  const char* centralAddress();
+  const char* centralAddress() const;
 
-  // Update live characteristics
   void setEco2(uint16_t eco2);
   void setTime(const char* timeStr);
 
-  // Reliability
-  void onAckUpdate(); // call in loop to update ack from writes
   bool sendRecordWithAck(uint32_t seq, const char* dateStr, const char* payloadLine);
 
 private:
@@ -31,9 +29,7 @@ private:
   BLEUnsignedIntCharacteristic ackChar{ACK_CHAR_UUID, BLEWrite};
   BLEStringCharacteristic      payloadChar{PAYLOAD_UUID, BLERead | BLENotify, 80};
 
-  bool wasConnected = false;
-  String lastCentralAddr;
-
+  mutable String lastCentralAddr;
   volatile uint32_t lastAckSeq = 0;
 
   bool waitAck(uint32_t seq, unsigned long timeoutMs);

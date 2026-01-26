@@ -11,8 +11,6 @@ public:
   void tryReinit(int pinSd);
 
   void appendLine(const char* line);
-
-  // Flush queued lines through BLE (reliable ACK), keeps not-sent lines.
   void flushIfAny(BleLink& ble);
 
 private:

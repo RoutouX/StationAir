@@ -84,14 +84,12 @@ void SdOutbox::flushIfAny(BleLink& ble) {
     if (p4 < 0) { newf.println(line); continue; }
     uint16_t eco2m = (uint16_t) line.substring(p3 + 1, p4).toInt();
 
-    // Update live eco2 for UI
     ble.setEco2(eco2m);
 
     bool ok = ble.sendRecordWithAck(seq, dateStr.c_str(), line.c_str());
     if (!ok) {
       Serial.print("⚠️ Flush stop (ACK fail) at seq="); Serial.println(seq);
 
-      // keep current + rest
       newf.println(line);
       while (in.available()) {
         String rest = in.readStringUntil('\n');

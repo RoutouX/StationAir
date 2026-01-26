@@ -15,17 +15,50 @@ SensorSGP sensor;
 BleLink ble;
 SdOutbox outbox;
 
-// ===== Minute buffer (eCO2 only) =====
-uint16_t bufEco2[MAX_SAMPLES_PER_MIN];
-uint8_t  bufCount = 0;
+// ===== Circular buffer =====
+static uint16_t ring[MAX_BUFFER_SAMPLES];
+static uint16_t ringCount = 0;
+static uint16_t ringHead = 0;
 
-int lastMinute = -1;
-int lastHour = -1;
-int lastDay = -1;
+static uint16_t work[MAX_BUFFER_SAMPLES];
 
+// ===== Timing =====
 unsigned long lastSampleMs = 0;
+unsigned long lastReportMs = 0;
+
+// Auto-calculated sample interval
+unsigned long SAMPLE_INTERVAL_MS = 1000;
+
 uint32_t nextSeq = 1;
 
+// ===== Ring helpers =====
+static void ringPush(uint16_t v) {
+  ring[ringHead] = v;
+  ringHead = (ringHead + 1) % MAX_BUFFER_SAMPLES;
+  if (ringCount < MAX_BUFFER_SAMPLES) ringCount++;
+}
+
+static uint16_t ringGetFromEnd(uint16_t idxFromEnd) {
+  if (idxFromEnd >= ringCount) idxFromEnd = ringCount - 1;
+  int32_t pos = (int32_t)ringHead - 1 - (int32_t)idxFromEnd;
+  while (pos < 0) pos += MAX_BUFFER_SAMPLES;
+  return ring[(uint16_t)pos];
+}
+
+static uint16_t computeMedianLastNSamples(uint16_t N) {
+  if (ringCount == 0 || N == 0) return 0;
+  if (N > ringCount) N = ringCount;
+  if (N > MAX_BUFFER_SAMPLES) N = MAX_BUFFER_SAMPLES;
+
+  for (uint16_t i = 0; i < N; i++) {
+    work[i] = ringGetFromEnd(i);
+  }
+
+  sort_u16_inplace(work, N);
+  return median_u16_from_sorted(work, N);
+}
+
+// ===== CSV builder =====
 static void buildRecordLine(char* out, size_t outSz,
                             uint32_t seq, uint32_t unixTs, const char* dateStr,
                             uint16_t eco2m, uint32_t uptimeS) {
@@ -42,7 +75,7 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  Serial.println("\n=== STATIONAIR (multi-files): MEDIAN eCO2 / MIN + SD OUTBOX + ACK BLE ===");
+  Serial.println("\n=== STATIONAIR : AUTO SAMPLE RATE (REPORT / N) ===");
 
   Wire.begin();
 
@@ -50,68 +83,68 @@ void setup() {
   if (!rtc.begin()) { Serial.println("❌ RTC HS"); while (1) {} }
   if (!rtc.isrunning()) rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
+  // Auto compute sample interval
+  SAMPLE_INTERVAL_MS = REPORT_INTERVAL_MS / NB_SAMPLES_PER_MEDIAN;
+  if (SAMPLE_INTERVAL_MS < 10) SAMPLE_INTERVAL_MS = 10; // safety clamp
+
+  Serial.print("🧮 REPORT_INTERVAL_MS = ");
+  Serial.println(REPORT_INTERVAL_MS);
+  Serial.print("🧮 NB_SAMPLES_PER_MEDIAN = ");
+  Serial.println(NB_SAMPLES_PER_MEDIAN);
+  Serial.print("🧮 SAMPLE_INTERVAL_MS = ");
+  Serial.println(SAMPLE_INTERVAL_MS);
+
   // SD
   Serial.print("Init SD... ");
-  if (outbox.begin(PIN_SD)) {
-    Serial.println("✅ OK SD");
-  } else {
-    Serial.println("⚠️ SD absente (retry en boucle)");
-  }
+  if (outbox.begin(PIN_SD)) Serial.println("✅ OK SD");
+  else Serial.println("⚠️ SD absente");
 
-  // SGP30
+  // Sensor
   if (!sensor.begin()) { Serial.println("❌ SGP30 HS"); while (1) {} }
 
   // BLE
   if (!ble.begin()) { Serial.println("❌ BLE ECHEC"); while (1) {} }
-  Serial.println("✅ BLE prêt (advertising).");
+  Serial.println("✅ BLE prêt");
+
+  lastSampleMs = millis();
+  lastReportMs = millis();
 }
 
 void loop() {
   ble.poll();
   ble.onAckUpdate();
 
-  // SD retry if missing
   outbox.tryReinit(PIN_SD);
 
-  // On connect: flush queue
+  // BLE connection events
   if (ble.justConnected()) {
     Serial.print("👋 CONNECTÉ A : ");
     Serial.println(ble.centralAddress());
     outbox.flushIfAny(ble);
   }
   if (ble.justDisconnected()) {
-    Serial.println("👋 DÉCONNECTÉ -> mode SD");
+    Serial.println("👋 DÉCONNECTÉ -> SD mode");
   }
 
-  // Sampling every second
   unsigned long nowMs = millis();
-  if (nowMs - lastSampleMs < SAMPLE_INTERVAL_MS) return;
-  lastSampleMs = nowMs;
 
-  // Sample sensor
-  uint16_t eco2 = 0;
-  if (!sensor.sampleEco2(eco2)) return;
+  // ===== SAMPLE LOOP =====
+  if (nowMs - lastSampleMs >= SAMPLE_INTERVAL_MS) {
+    lastSampleMs = nowMs;
+
+    uint16_t eco2 = 0;
+    if (sensor.sampleEco2(eco2)) {
+      ringPush(eco2);
+    }
+  }
+
+  // ===== REPORT LOOP =====
+  if (nowMs - lastReportMs < REPORT_INTERVAL_MS) return;
+  lastReportMs = nowMs;
+
+  uint16_t eco2m = computeMedianLastNSamples(NB_SAMPLES_PER_MEDIAN);
 
   DateTime now = rtc.now();
-  if (lastMinute < 0) {
-    lastMinute = now.minute();
-    lastHour = now.hour();
-    lastDay = now.day();
-  }
-
-  // Push into minute buffer
-  if (bufCount < MAX_SAMPLES_PER_MIN) {
-    bufEco2[bufCount++] = eco2;
-  }
-
-  // minute changed?
-  bool minuteChanged = (now.minute() != lastMinute) || (now.hour() != lastHour) || (now.day() != lastDay);
-  if (!minuteChanged) return;
-
-  // Median of last minute samples
-  uint16_t eco2m = median_u16(bufEco2, bufCount);
-
-  // Record timestamp string (moment we detected change)
   char dateStr[20];
   formatDateStr(dateStr, sizeof(dateStr), now);
 
@@ -119,47 +152,37 @@ void loop() {
   uint32_t seq = nextSeq++;
 
   char line[100];
-  buildRecordLine(line, sizeof(line), seq, unixTs, dateStr, eco2m, (uint32_t)(millis() / 1000UL));
+  buildRecordLine(line, sizeof(line), seq, unixTs, dateStr, eco2m, (uint32_t)(nowMs / 1000UL));
 
-  // Print each minute median
-  Serial.print("📊 MEDIAN eCO2 (1min) | seq=");
+  // Log
+  Serial.print("📊 REPORT | interval=");
+  Serial.print(REPORT_INTERVAL_MS / 1000);
+  Serial.print("s | samples=");
+  Serial.print(NB_SAMPLES_PER_MEDIAN);
+  Serial.print(" | seq=");
   Serial.print(seq);
-  Serial.print(" | ");
-  Serial.print(dateStr);
-  Serial.print(" | eCO2=");
+  Serial.print(" | eCO2(med)=");
   Serial.print(eco2m);
   Serial.println(" ppm");
 
-  // Reset buffers for new minute
-  bufCount = 0;
-  lastMinute = now.minute();
-  lastHour = now.hour();
-  lastDay = now.day();
-
-  // Update live BLE characteristic
+  // BLE live value
   ble.setEco2(eco2m);
 
-  // Send or store
+  // BLE send or SD queue
   if (ble.isConnected()) {
     bool ok = ble.sendRecordWithAck(seq, dateStr, line);
     if (ok) {
-      Serial.print("📡 BLE sent + ACK | seq=");
-      Serial.print(seq);
-      Serial.print(" | ");
-      Serial.println(dateStr);
-
-      // flush older SD
+      Serial.print("📡 BLE ACK OK | seq=");
+      Serial.println(seq);
       outbox.flushIfAny(ble);
     } else {
-      Serial.print("⚠️ BLE send failed (no ACK) -> store SD | seq=");
+      Serial.print("⚠️ BLE FAIL -> SD | seq=");
       Serial.println(seq);
       outbox.appendLine(line);
     }
   } else {
-    Serial.print("💾 SD store (no BLE) | seq=");
-    Serial.print(seq);
-    Serial.print(" | ");
-    Serial.println(dateStr);
+    Serial.print("💾 SD SAVE | seq=");
+    Serial.println(seq);
     outbox.appendLine(line);
   }
 }
