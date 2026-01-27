@@ -4,18 +4,13 @@
 // ===== PINS =====
 constexpr int PIN_SD = 4;
 
+constexpr int PIN_STATUS_LED = 2; // LED classique
+
 // ===== REPORTING =====
-
-// Intervalle global pour :
-// - calcul médiane
-// - envoi BLE
-// - sauvegarde SD
-constexpr unsigned long REPORT_INTERVAL_MS = 20000; // 60s
-
-// Nombre de mesures utilisées pour chaque médiane
+constexpr unsigned long REPORT_INTERVAL_MS = 20000; // 20s
 constexpr uint16_t NB_SAMPLES_PER_MEDIAN = 20;
 
-// Taille max du buffer circulaire (sécurité RAM)
+// Buffer max (sécurité RAM)
 constexpr uint16_t MAX_BUFFER_SAMPLES = 300;
 
 // ===== SD QUEUE FILES =====
@@ -34,3 +29,7 @@ static const char* PAYLOAD_UUID     = "3006";
 
 // ===== ACK =====
 constexpr unsigned long ACK_TIMEOUT_MS = 1500;
+
+// ===== LED =====
+constexpr unsigned long LED_BLINK_DURATION_MS = 2000;
+constexpr unsigned long LED_SOLID_DURATION_MS = 2000;

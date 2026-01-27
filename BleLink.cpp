@@ -26,7 +26,6 @@ bool BleLink::begin() {
 
 void BleLink::poll() {
   BLE.poll();
-
   BLEDevice central = BLE.central();
   if (central && central.connected()) {
     lastCentralAddr = central.address();

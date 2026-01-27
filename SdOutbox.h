@@ -7,7 +7,6 @@
 class SdOutbox {
 public:
   bool begin(int pinSd);
-  bool ready() const { return isReady; }
   void tryReinit(int pinSd);
 
   void appendLine(const char* line);
@@ -15,6 +14,5 @@ public:
 
 private:
   bool isReady = false;
-
   void writeHeaderIfNeeded(File& f);
 };
