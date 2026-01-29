@@ -6,17 +6,17 @@ bool BleLink::begin() {
   BLE.setLocalName(BLE_LOCAL_NAME);
   BLE.setAdvertisedService(envService);
 
-  // Ajout des caractéristiques
   envService.addCharacteristic(eco2Char);
   envService.addCharacteristic(timeChar);
   envService.addCharacteristic(payloadChar);
+  envService.addCharacteristic(ackChar); // ✅ ajout ACK
 
   BLE.addService(envService);
 
-  // Valeurs initiales
   eco2Char.writeValue(0);
   timeChar.writeValue("00/00 00:00:00");
   payloadChar.writeValue("");
+  // ackChar n'a pas besoin de valeur initiale
 
   BLE.advertise();
   return true;
@@ -24,10 +24,21 @@ bool BleLink::begin() {
 
 void BleLink::poll() {
   BLE.poll();
-  // Met à jour l'adresse si connecté
+
   BLEDevice central = BLE.central();
   if (central && central.connected()) {
     lastCentralAddr = central.address();
+  }
+
+  // ✅ Traitement ACK (central écrit un uint32)
+  if (ackChar.written()) {
+    uint32_t got = 0;
+    ackChar.readValue(got);
+
+    if (_waitingAckSeq != 0 && got == _waitingAckSeq) {
+      _ackOk = true;
+      _waitingAckSeq = 0;
+    }
   }
 }
 
@@ -57,9 +68,8 @@ const char* BleLink::centralAddress() const {
 }
 
 void BleLink::setEco2(uint16_t eco2) {
-  // Avec Indicate, writeValue attend l'ACK du téléphone
   if (isConnected()) {
-    eco2Char.writeValue(eco2); 
+    eco2Char.writeValue(eco2);
   }
 }
 
@@ -69,16 +79,25 @@ void BleLink::setTime(const char* timeStr) {
   }
 }
 
-bool BleLink::sendRecord(const char* payloadLine) {
+bool BleLink::sendRecord(uint32_t seq, const char* payloadLine) {
   BLEDevice central = BLE.central();
-  
-  // 1. Vérification basique
   if (!central || !central.connected()) return false;
 
-  // 2. Envoi avec INDICATION
-  // writeValue() va envoyer la donnée et attendre l'ACK du téléphone.
-  // Si le téléphone ne répond pas, writeValue renvoie false (ou 0).
-  bool success = payloadChar.writeValue(payloadLine);
+  _ackOk = false;
+  _waitingAckSeq = seq;
+  _ackStartMs = millis();
 
-  return success;
+  // ✅ NOTIFY => non bloquant
+  return payloadChar.writeValue(payloadLine);
+}
+
+bool BleLink::ackTimedOut() const {
+  if (_waitingAckSeq == 0) return false; // plus en attente
+  return (millis() - _ackStartMs) > ACK_TIMEOUT_MS;
+}
+
+void BleLink::resetAck() {
+  _ackOk = false;
+  _waitingAckSeq = 0;
+  _ackStartMs = 0;
 }

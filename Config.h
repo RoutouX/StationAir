@@ -14,18 +14,20 @@ constexpr uint16_t MAX_BUFFER_SAMPLES = 300;
 
 // ===== SD QUEUE FILES =====
 static const char* OUTBOX_FILE = "OUTBOX.CSV";
-static const char* OUTBOX_NEW = "OUTBOX.NEW";
+static const char* OUTBOX_NEW  = "OUTBOX.NEW";
 
 // ===== BLE =====
-static const char* BLE_LOCAL_NAME = "StationAir";
+static const char* BLE_LOCAL_NAME   = "StationAir";
 
 static const char* ENV_SERVICE_UUID = "181A";
-static const char* ECO2_CHAR_UUID = "3001";
-static const char* TIME_CHAR_UUID = "3003";
+static const char* ECO2_CHAR_UUID   = "3001";
+static const char* TIME_CHAR_UUID   = "3003";
 
-static const char* PAYLOAD_UUID = "3006"; 
+static const char* PAYLOAD_UUID     = "3006"; // NOTIFY payload
+static const char* ACK_CHAR_UUID    = "3007"; // write ack from central
+
 // ===== ACK =====
-constexpr unsigned long ACK_TIMEOUT_MS = 1500; // Temps d'attente max de la réponse auto
+constexpr unsigned long ACK_TIMEOUT_MS = 1500; // Temps d'attente max ACK applicatif
 
 // ===== LED =====
 constexpr unsigned long LED_BLINK_DURATION_MS = 2000;

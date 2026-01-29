@@ -8,30 +8,40 @@ public:
   bool begin();
   void poll();
 
-  // État de la connexion
   bool isConnected() const;
   bool justConnected();
   bool justDisconnected();
   const char* centralAddress() const;
 
-  // Mise à jour des valeurs "Live"
   void setEco2(uint16_t eco2);
   void setTime(const char* timeStr);
 
-  // Envoi de l'historique (BLOQUANT et SÉCURISÉ par BLEIndicate)
-  // Retourne true si le téléphone a confirmé la réception
-  bool sendRecord(const char* payloadLine);
+  // ✅ Envoi non bloquant (NOTIFY) + attente ACK applicatif via poll()
+  // Retourne true si l'envoi notify a été "déclenché" (pas l'ACK)
+  bool sendRecord(uint32_t seq, const char* payloadLine);
+
+  // ✅ Etat ACK (applicatif)
+  bool ackReceived() const { return _ackOk; }
+  bool ackTimedOut() const;
+  void resetAck();
 
 private:
   BLEService envService{ENV_SERVICE_UUID};
 
-  // Indicate garantit la réception pour le CO2 et l'heure
-  BLEUnsignedIntCharacteristic eco2Char{ECO2_CHAR_UUID, BLERead | BLEIndicate};
-  BLEStringCharacteristic      timeChar{TIME_CHAR_UUID, BLERead | BLEIndicate, 20};
+  // ✅ NOTIFY => non bloquant
+  BLEUnsignedIntCharacteristic eco2Char{ECO2_CHAR_UUID, BLERead | BLENotify};
+  BLEStringCharacteristic      timeChar{TIME_CHAR_UUID, BLERead | BLENotify, 20};
 
-  // La caractéristique pour envoyer la ligne CSV complète
-  // Taille max 80 (Attention au MTU, voir note plus bas)
-  BLEStringCharacteristic      payloadChar{PAYLOAD_UUID, BLERead | BLEIndicate, 80};
+  // ✅ NOTIFY pour les lignes
+  BLEStringCharacteristic      payloadChar{PAYLOAD_UUID, BLERead | BLENotify, 80};
+
+  // ✅ Le central écrit le seq acké
+  BLEUnsignedIntCharacteristic ackChar{ACK_CHAR_UUID, BLEWriteWithoutResponse};
 
   mutable String lastCentralAddr;
+
+  // ACK state
+  uint32_t _waitingAckSeq = 0;
+  unsigned long _ackStartMs = 0;
+  bool _ackOk = false;
 };

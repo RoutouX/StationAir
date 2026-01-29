@@ -205,18 +205,32 @@ void loop() {
     Serial.print(">> BLE send try seq=");
     Serial.println(seq);
     startLedBlink("BLE send"); // blink 2s for BLE send
-    bool ok = ble.sendRecord(line);    if (ok) {
-      Serial.println(">> BLE OK (blink will stop after 2s)");
-      outbox.flushIfAny(ble);
-    } else {
-      Serial.println("!! BLE FAIL -> SD");
-      Serial.println(">> SD append (BLE fail)");
-      outbox.appendLine(line);
-      startLedSolid("SD write (BLE fail)");
-    }
-  } else {
-    Serial.println(">> SD append (no BLE)");
-    outbox.appendLine(line);
-    startLedSolid("SD write (no BLE)");
+    bool started = ble.sendRecord(seq, line);
+
+if (started) {
+  // Attente non bloquante de l'ACK (tu laisses loop tourner)
+  // => tu peux choisir de décider dans le même report (simple),
+  // ou de vérifier plus tard (encore mieux). Ici simple :
+  unsigned long start = millis();
+  while (!ble.ackReceived() && !ble.ackTimedOut()) {
+    ble.poll();     // keep BLE alive
+    updateLed();    // optionnel
   }
+
+  if (ble.ackReceived()) {
+    Serial.println(">> BLE ACK OK");
+    outbox.flushIfAny(ble);
+    ble.resetAck();
+  } else {
+    Serial.println("!! BLE ACK TIMEOUT -> SD");
+    outbox.appendLine(line);
+    startLedSolid("SD write (ACK timeout)");
+    ble.resetAck();
+  }
+} else {
+  Serial.println("!! BLE SEND FAIL -> SD");
+  outbox.appendLine(line);
+  startLedSolid("SD write (send fail)");
+} 
+}
 }

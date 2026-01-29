@@ -1,105 +1,139 @@
 #include "SdOutbox.h"
 
-bool SdOutbox::begin(int pinSd) {
-  isReady = SD.begin(pinSd);
-  return isReady;
+static bool readFirstLine(File& f, String& out) {
+  out = "";
+  while (f.available()) {
+    char c = (char)f.read();
+    if (c == '\r') continue;
+    if (c == '\n') break;
+    out += c;
+    if (out.length() > 200) break; // sécurité
+  }
+  return out.length() > 0;
 }
 
-void SdOutbox::tryReinit(int pinSd) {
-  if (isReady) return;
-  if (SD.begin(pinSd)) {
-    Serial.println("OK SD retrouvee");
-    isReady = true;
-  }
+bool SdOutbox::begin(int csPin) {
+  _sdOk = SD.begin(csPin);
+  return _sdOk;
 }
 
-void SdOutbox::writeHeaderIfNeeded(File& f) {
-  if (f.size() == 0) {
-    f.println("seq;unix;date;eco2_med;uptime_s");
-  }
+void SdOutbox::tryReinit(int csPin) {
+  if (_sdOk) return;
+  _sdOk = SD.begin(csPin);
 }
 
 void SdOutbox::appendLine(const char* line) {
-  if (!isReady) {
-    Serial.println("!! SD not ready, skip append");
-    return;
-  }
+  if (!_sdOk || !line || !line[0]) return;
 
-  Serial.println(">> [SD] append OUTBOX");
   File f = SD.open(OUTBOX_FILE, FILE_WRITE);
-  if (!f) {
-    Serial.println("ERR SD: OUTBOX open failed");
-    isReady = false;
-    return;
-  }
+  if (!f) return;
 
-  writeHeaderIfNeeded(f);
   f.println(line);
   f.close();
 }
 
-void SdOutbox::flushIfAny(BleLink& ble) {
-  // Vérifications de base
-  if (!isReady || !ble.isConnected()) return;
-  if (!SD.exists(OUTBOX_FILE)) return;
+bool SdOutbox::parseSeq_(const char* line, uint32_t& outSeq) {
+  if (!line) return false;
+  const char* semi = strchr(line, ';');
+  if (!semi) return false;
 
+  char buf[16];
+  size_t n = (size_t)(semi - line);
+  if (n == 0 || n >= sizeof(buf)) return false;
+  memcpy(buf, line, n);
+  buf[n] = '\0';
+
+  outSeq = (uint32_t)strtoul(buf, nullptr, 10);
+  return outSeq != 0;
+}
+
+void SdOutbox::removeFirstLine_() {
+  // 1. Ouvrir les fichiers pour préparer la version sans la première ligne
   File in = SD.open(OUTBOX_FILE, FILE_READ);
-  File newf = SD.open(OUTBOX_NEW, FILE_WRITE); // Fichier temporaire
-  
-  if (!in || !newf) return;
+  if (!in) return;
 
-  Serial.println(">> Flush SD -> BLE");
+  File out = SD.open(OUTBOX_NEW, FILE_WRITE);
+  if (!out) {
+    in.close();
+    return;
+  }
 
-  bool firstLine = true;
-
+  bool firstSkipped = false;
   while (in.available()) {
-    String line = in.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) continue;
+    String line;
+    if (!readFirstLine(in, line)) break;
 
-    // Gestion de l'entête (on le recopie juste)
-    if (firstLine) {
-      firstLine = false;
-      if (line.startsWith("seq;")) {
-        newf.println(line);
-        continue;
-      } else {
-        // Si l'entête manquait, on l'ajoute
-        newf.println("seq;unix;date;eco2_med;uptime_s");
-      }
+    if (!firstSkipped) {
+      firstSkipped = true; // On ignore la première ligne ici
+      continue;
     }
-
-    // === CORRECTION ICI ===
-    // On n'a plus besoin de découper la ligne (parsing) car sendRecord prend tout.
-    // On envoie la ligne complète directement.
-    
-    // sendRecord est bloquant et utilise 'Indicate' pour garantir la réception
-    bool ok = ble.sendRecord(line.c_str()); 
-
-    if (!ok) {
-      // Si l'envoi échoue (pas d'ACK ou déconnexion), 
-      // on sauvegarde la ligne dans le nouveau fichier pour réessayer plus tard.
-      newf.println(line);
-      
-      // Optionnel : On peut arrêter le flush ici pour ne pas bloquer 
-      // si la connexion est perdue au milieu
-      break; 
-    }
-    // Si ok, on ne fait rien (la ligne n'est pas copiée dans newf, donc elle est "supprimée" de la liste d'attente)
+    out.println(line);
   }
 
   in.close();
-  newf.close();
+  out.close();
 
-  // Remplacement de l'ancien fichier par le nouveau (qui contient les restes non envoyés)
+  // === REMPLACEMENT DE SD.rename() ===
+  // On supprime l'ancien fichier
   SD.remove(OUTBOX_FILE);
-  
-  // Copie physique (SD vers SD) pour renommer proprement
+
+  // On recopie le contenu de OUTBOX_NEW vers OUTBOX_FILE
   File src = SD.open(OUTBOX_NEW, FILE_READ);
   File dst = SD.open(OUTBOX_FILE, FILE_WRITE);
-  while (src.available()) dst.write(src.read());
-  src.close();
-  dst.close();
   
+  if (src && dst) {
+    while (src.available()) {
+      dst.write(src.read());
+    }
+  }
+
+  if (src) src.close();
+  if (dst) dst.close();
+
+  // On nettoie le fichier temporaire
   SD.remove(OUTBOX_NEW);
+}
+
+void SdOutbox::flushIfAny(BleLink& ble) {
+  if (!_sdOk) return;
+  if (!ble.isConnected()) return;
+
+  while (true) {
+    File f = SD.open(OUTBOX_FILE, FILE_READ);
+    if (!f) return;
+
+    String line;
+    bool hasLine = readFirstLine(f, line);
+    f.close();
+
+    if (!hasLine) return; // Fichier vide, on s'arrête
+
+    uint32_t seq = 0;
+    if (!parseSeq_(line.c_str(), seq)) {
+      // Ligne corrompue : on la supprime et on passe à la suivante
+      removeFirstLine_();
+      continue;
+    }
+
+    // Tentative d'envoi
+    bool started = ble.sendRecord(seq, line.c_str());
+    if (!started) return; // Échec d'envoi, on arrête le flush pour cette fois
+
+    // Attente de l'ACK
+    unsigned long start = millis();
+    while (!ble.ackReceived() && !ble.ackTimedOut()) {
+      ble.poll();
+      // Petite sécurité pour ne pas rester bloqué indéfiniment
+      if (millis() - start > (ACK_TIMEOUT_MS + 100)) break;
+    }
+
+    if (ble.ackReceived()) {
+      ble.resetAck();
+      removeFirstLine_(); // Envoi réussi, on dépile la ligne
+      continue;
+    } else {
+      ble.resetAck();
+      return; // Timeout, on réessaiera plus tard
+    }
+  }
 }
