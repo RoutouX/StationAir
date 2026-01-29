@@ -7,30 +7,31 @@ class BleLink {
 public:
   bool begin();
   void poll();
-  void onAckUpdate();
 
+  // État de la connexion
   bool isConnected() const;
   bool justConnected();
   bool justDisconnected();
   const char* centralAddress() const;
 
+  // Mise à jour des valeurs "Live"
   void setEco2(uint16_t eco2);
   void setTime(const char* timeStr);
 
-  bool sendRecordWithAck(uint32_t seq, const char* dateStr, const char* payloadLine);
+  // Envoi de l'historique (BLOQUANT et SÉCURISÉ par BLEIndicate)
+  // Retourne true si le téléphone a confirmé la réception
+  bool sendRecord(const char* payloadLine);
 
 private:
   BLEService envService{ENV_SERVICE_UUID};
 
-  BLEUnsignedIntCharacteristic eco2Char{ECO2_CHAR_UUID, BLERead | BLENotify};
-  BLEStringCharacteristic     timeChar{TIME_CHAR_UUID, BLERead | BLENotify, 20};
+  // Indicate garantit la réception pour le CO2 et l'heure
+  BLEUnsignedIntCharacteristic eco2Char{ECO2_CHAR_UUID, BLERead | BLEIndicate};
+  BLEStringCharacteristic      timeChar{TIME_CHAR_UUID, BLERead | BLEIndicate, 20};
 
-  BLEUnsignedIntCharacteristic seqChar{SEQ_CHAR_UUID, BLERead | BLENotify};
-  BLEUnsignedIntCharacteristic ackChar{ACK_CHAR_UUID, BLEWrite};
-  BLEStringCharacteristic      payloadChar{PAYLOAD_UUID, BLERead | BLENotify, 80};
+  // La caractéristique pour envoyer la ligne CSV complète
+  // Taille max 80 (Attention au MTU, voir note plus bas)
+  BLEStringCharacteristic      payloadChar{PAYLOAD_UUID, BLERead | BLEIndicate, 80};
 
   mutable String lastCentralAddr;
-  volatile uint32_t lastAckSeq = 0;
-
-  bool waitAck(uint32_t seq, unsigned long timeoutMs);
 };

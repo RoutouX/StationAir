@@ -160,7 +160,6 @@ void setup() {
 
 void loop() {
   ble.poll();
-  ble.onAckUpdate();
   updateLed();
 
   outbox.tryReinit(PIN_SD);
@@ -206,8 +205,7 @@ void loop() {
     Serial.print(">> BLE send try seq=");
     Serial.println(seq);
     startLedBlink("BLE send"); // blink 2s for BLE send
-    bool ok = ble.sendRecordWithAck(seq, dateStr, line);
-    if (ok) {
+    bool ok = ble.sendRecord(line);    if (ok) {
       Serial.println(">> BLE OK (blink will stop after 2s)");
       outbox.flushIfAny(ble);
     } else {
