@@ -61,19 +61,10 @@ static uint16_t computeMedianLastNSamples(uint16_t N) {
 }
 
 static void logLedState(const char* state, const char* reason) {
-  Serial.print("[LED] ");
-  Serial.print(state);
-  if (reason && reason[0] != '\0') {
-    Serial.print(" - ");
-    Serial.print(reason);
-  }
-  Serial.println();
+  // Serial.print("[LED] "); Serial.println(state); // Décommenter pour debug LED
 }
 
 static void setLedOff(const char* reason = nullptr) {
-  if (ledMode != LedMode::Off || reason) {
-    logLedState("OFF", reason);
-  }
   ledMode = LedMode::Off;
   digitalWrite(PIN_STATUS_LED, LOW);
 }
@@ -103,7 +94,6 @@ void updateLed() {
   if (ledMode != LedMode::Blink) return;
 
   unsigned long now = millis();
-
   // Blink ~4Hz
   bool state = ((now / 125) % 2) == 0;
   digitalWrite(PIN_STATUS_LED, state ? HIGH : LOW);
@@ -115,14 +105,13 @@ void updateLed() {
 
 static void buildRecordLine(char* out, size_t outSz,
                             uint32_t seq, uint32_t unixTs, const char* dateStr,
-                            uint16_t eco2m, uint32_t uptimeS) {
+                            uint16_t eco2m) {
   snprintf(out, outSz,
-           "%lu;%lu;%s;%u;%lu",
+           "%lu;%lu;%s;%u",
            (unsigned long)seq,
            (unsigned long)unixTs,
            dateStr,
-           eco2m,
-           (unsigned long)uptimeS);
+           eco2m);
 }
 
 void setup() {
@@ -136,7 +125,10 @@ void setup() {
 
   Wire.begin();
 
-  if (!rtc.begin()) { Serial.println("ERR RTC HS"); while (1) {} }
+  if (!rtc.begin()) { 
+    Serial.println("ERR RTC HS"); 
+    // On continue quand même, sinon impossible de debugguer le reste
+  }
   if (!rtc.isrunning()) rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
   // Auto sample interval
@@ -144,9 +136,6 @@ void setup() {
   if (SAMPLE_INTERVAL_MS < 10) SAMPLE_INTERVAL_MS = 10;
 
   Serial.print("REPORT_INTERVAL_MS="); Serial.println(REPORT_INTERVAL_MS);
-  Serial.print("NB_SAMPLES_PER_MEDIAN="); Serial.println(NB_SAMPLES_PER_MEDIAN);
-  Serial.print("SAMPLE_INTERVAL_MS="); Serial.println(SAMPLE_INTERVAL_MS);
-
   Serial.print("Init SD... ");
   if (outbox.begin(PIN_SD)) Serial.println("OK");
   else Serial.println("SD absente");
@@ -192,7 +181,7 @@ void loop() {
   uint32_t seq = nextSeq++;
 
   char line[100];
-  buildRecordLine(line, sizeof(line), seq, now.unixtime(), dateStr, eco2m, nowMs / 1000UL);
+  buildRecordLine(line, sizeof(line), seq, now.unixtime(), dateStr, eco2m);
 
   Serial.print(">> REPORT eCO2(med)=");
   Serial.print(eco2m);
@@ -201,36 +190,46 @@ void loop() {
 
   ble.setEco2(eco2m);
 
+  // === LOGIQUE DE DECISION (BLE vs SD) ===
+  
   if (ble.isConnected()) {
+    // CAS 1 : BLUETOOTH CONNECTÉ
     Serial.print(">> BLE send try seq=");
     Serial.println(seq);
-    startLedBlink("BLE send"); // blink 2s for BLE send
+    startLedBlink("BLE send"); 
+
     bool started = ble.sendRecord(seq, line);
 
-if (started) {
-  // Attente non bloquante de l'ACK (tu laisses loop tourner)
-  // => tu peux choisir de décider dans le même report (simple),
-  // ou de vérifier plus tard (encore mieux). Ici simple :
-  unsigned long start = millis();
-  while (!ble.ackReceived() && !ble.ackTimedOut()) {
-    ble.poll();     // keep BLE alive
-    updateLed();    // optionnel
-  }
+    if (started) {
+      // Attente ACK
+      unsigned long start = millis();
+      while (!ble.ackReceived() && !ble.ackTimedOut()) {
+        ble.poll();     
+        updateLed();    
+        if (millis() - start > (ACK_TIMEOUT_MS + 100)) break; // Sécurité boucle
+      }
 
-  if (ble.ackReceived()) {
-    Serial.println(">> BLE ACK OK");
-    outbox.flushIfAny(ble);
-    ble.resetAck();
+      if (ble.ackReceived()) {
+        Serial.println(">> BLE ACK OK");
+        outbox.flushIfAny(ble);
+        ble.resetAck();
+      } else {
+        Serial.println("!! BLE ACK TIMEOUT -> SD");
+        outbox.appendLine(line);
+        startLedSolid("SD write (ACK timeout)");
+        ble.resetAck();
+      }
+    } else {
+      // Echec démarrage envoi
+      Serial.println("!! BLE SEND FAIL -> SD");
+      outbox.appendLine(line);
+      startLedSolid("SD write (send fail)");
+    } 
+
   } else {
-    Serial.println("!! BLE ACK TIMEOUT -> SD");
+    Serial.println(">> Ecriture sur la carte SD");
     outbox.appendLine(line);
-    startLedSolid("SD write (ACK timeout)");
-    ble.resetAck();
+    startLedSolid("SD write (offline)");
   }
-} else {
-  Serial.println("!! BLE SEND FAIL -> SD");
-  outbox.appendLine(line);
-  startLedSolid("SD write (send fail)");
-} 
-}
-}
+  
+} // <--- FIN DE LA BOUCLE LOOP

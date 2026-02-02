@@ -14,7 +14,7 @@ constexpr uint16_t MAX_BUFFER_SAMPLES = 300;
 
 // ===== SD QUEUE FILES =====
 static const char* OUTBOX_FILE = "OUTBOX.CSV";
-static const char* OUTBOX_NEW  = "OUTBOX.NEW";
+static const char* OUTBOX_NEW  = "OUTBOX.CSV";
 
 // ===== BLE =====
 static const char* BLE_LOCAL_NAME   = "StationAir";

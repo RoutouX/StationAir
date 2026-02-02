@@ -13,46 +13,65 @@ static bool readFirstLine(File& f, String& out) {
 }
 
 bool SdOutbox::begin(int csPin) {
-  _sdOk = SD.begin(csPin);
-  return _sdOk;
+    _sdOk = SD.begin(csPin);
+    if (_sdOk) {
+        Serial.println(">> [SD] Initialisation REUSSIE");
+    } else {
+        Serial.println("!! [SD] Initialisation ECHOUEE");
+    }
+    return _sdOk;
 }
 
 void SdOutbox::tryReinit(int csPin) {
-  if (_sdOk) return;
-  _sdOk = SD.begin(csPin);
+    if (_sdOk) return;
+    if (SD.begin(csPin)) {
+        Serial.println(">> [SD] Carte retrouvee !");
+        _sdOk = true;
+    }
 }
 
 void SdOutbox::appendLine(const char* line) {
-  if (!_sdOk || !line || !line[0]) return;
+    if (!_sdOk) return;
 
-  File f = SD.open(OUTBOX_FILE, FILE_WRITE);
-  if (!f) return;
-
-  f.println(line);
-  f.close();
+    bool exists = SD.exists(OUTBOX_FILE);
+    File f = SD.open(OUTBOX_FILE, FILE_WRITE);
+    
+    if (f) {
+        if (!exists || f.size() == 0) {
+            Serial.println(">> [SD] Creation nouveau fichier + Entete");
+            f.println("seq;unix;date;eco2_med;uptime_s");
+        }
+        f.println(line);
+        f.flush(); 
+        f.close();
+        Serial.print(">> [SD] Enregistre : "); Serial.println(line);
+    } else {
+        Serial.println("!! [SD] Erreur d'ouverture FILE_WRITE");
+        _sdOk = false;
+    }
 }
 
 bool SdOutbox::parseSeq_(const char* line, uint32_t& outSeq) {
   if (!line) return false;
   const char* semi = strchr(line, ';');
   if (!semi) return false;
-
   char buf[16];
   size_t n = (size_t)(semi - line);
   if (n == 0 || n >= sizeof(buf)) return false;
   memcpy(buf, line, n);
   buf[n] = '\0';
-
   outSeq = (uint32_t)strtoul(buf, nullptr, 10);
   return outSeq != 0;
 }
 
 void SdOutbox::removeFirstLine_() {
-  // 1. Ouvrir les fichiers pour préparer la version sans la première ligne
   File in = SD.open(OUTBOX_FILE, FILE_READ);
   if (!in) return;
 
+  // IMPORTANT : On utilise O_TRUNC pour effacer OUTBOX_NEW s'il existe deja
+  SD.remove(OUTBOX_NEW); 
   File out = SD.open(OUTBOX_NEW, FILE_WRITE);
+  
   if (!out) {
     in.close();
     return;
@@ -62,22 +81,17 @@ void SdOutbox::removeFirstLine_() {
   while (in.available()) {
     String line;
     if (!readFirstLine(in, line)) break;
-
     if (!firstSkipped) {
-      firstSkipped = true; // On ignore la première ligne ici
+      firstSkipped = true; 
       continue;
     }
     out.println(line);
   }
-
   in.close();
   out.close();
 
-  // === REMPLACEMENT DE SD.rename() ===
-  // On supprime l'ancien fichier
+  // On ecrase l'ancien par le nouveau
   SD.remove(OUTBOX_FILE);
-
-  // On recopie le contenu de OUTBOX_NEW vers OUTBOX_FILE
   File src = SD.open(OUTBOX_NEW, FILE_READ);
   File dst = SD.open(OUTBOX_FILE, FILE_WRITE);
   
@@ -86,19 +100,17 @@ void SdOutbox::removeFirstLine_() {
       dst.write(src.read());
     }
   }
-
   if (src) src.close();
   if (dst) dst.close();
-
-  // On nettoie le fichier temporaire
   SD.remove(OUTBOX_NEW);
 }
 
 void SdOutbox::flushIfAny(BleLink& ble) {
-  if (!_sdOk) return;
-  if (!ble.isConnected()) return;
+  if (!_sdOk || !ble.isConnected()) return;
 
-  while (true) {
+  // On limite le nombre de lignes par flush pour ne pas bloquer le loop trop longtemps
+  int limit = 10; 
+  while (limit > 0) {
     File f = SD.open(OUTBOX_FILE, FILE_READ);
     if (!f) return;
 
@@ -106,34 +118,35 @@ void SdOutbox::flushIfAny(BleLink& ble) {
     bool hasLine = readFirstLine(f, line);
     f.close();
 
-    if (!hasLine) return; // Fichier vide, on s'arrête
+    // Si c'est l'entête, on la saute
+    if (hasLine && line.startsWith("seq;")) {
+        removeFirstLine_();
+        continue;
+    }
+
+    if (!hasLine) return; 
 
     uint32_t seq = 0;
     if (!parseSeq_(line.c_str(), seq)) {
-      // Ligne corrompue : on la supprime et on passe à la suivante
       removeFirstLine_();
       continue;
     }
 
-    // Tentative d'envoi
-    bool started = ble.sendRecord(seq, line.c_str());
-    if (!started) return; // Échec d'envoi, on arrête le flush pour cette fois
+    if (!ble.sendRecord(seq, line.c_str())) return;
 
-    // Attente de l'ACK
     unsigned long start = millis();
     while (!ble.ackReceived() && !ble.ackTimedOut()) {
       ble.poll();
-      // Petite sécurité pour ne pas rester bloqué indéfiniment
       if (millis() - start > (ACK_TIMEOUT_MS + 100)) break;
     }
 
     if (ble.ackReceived()) {
       ble.resetAck();
-      removeFirstLine_(); // Envoi réussi, on dépile la ligne
-      continue;
+      removeFirstLine_();
+      limit--;
     } else {
       ble.resetAck();
-      return; // Timeout, on réessaiera plus tard
+      return; 
     }
   }
 }
